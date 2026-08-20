@@ -50,16 +50,23 @@ all become explicit states you manage by hand. Plus one non-obvious trap — §4
 ## 2. The two résumé bullets
 
 > **Built an HTTP forward proxy in C++20 implementing three interchangeable I/O architectures —
-> thread-per-connection, bounded thread pool, and a kqueue event loop — and measured each one's
-> failure mode: at **N** concurrent connections the event loop sustained **X req/s** on **A MB** RSS
-> against the pool's **Y req/s** on **B MB**.**
+> thread-per-connection, bounded thread pool, and a kqueue event loop — sharing one connection state
+> machine so the comparison isolates the architecture; held **500** idle connections at **0.64 KB**
+> each versus **16.22 KB** for thread-per-connection (**~25×**).**
 
-> **Isolated the bounded pool's real limit rather than quoting throughput: with **K** slow clients —
-> one per worker — the thread-pool proxy stopped serving entirely at near-zero CPU, while the event
-> loop held **P%** of baseline. The pool's constraint is connections in flight, not requests/sec.**
+> **Measured the bounded pool's real limit rather than its throughput: with one slow client per
+> worker, a 64-worker pool could not serve an ordinary request for **~2.1 s** while sitting at
+> **0.0 % CPU**, where the event loop served it in **0.01–0.63 s** — the constraint is connections in
+> flight, not requests/sec, and no throughput benchmark exposes it.**
 
-The second bullet is the one that separates this from every other proxy repo. Throughput numbers are
-common; a measured concurrency ceiling with the mechanism named is not.
+**Numbers as measured, and the limits on them:**
+- Concurrency sweep reaches **1,000**, not 10,000. **Do not write "10,000" or "C10K" as a measured
+  operating point** — C10K is the problem statement this project reasons about, not something
+  demonstrated here.
+- The ceiling figure is the median of three runs (2.15 / 2.14 / 2.03 s), 0.0 % CPU every time.
+- Memory is reproduced across all three benchmark runs.
+- The event loop is **3–4× slower on throughput** than the threaded backends (RESULTS.md §1). Lead
+  with the ceiling, not with throughput, and be ready to say why the event loop loses.
 
 ### 2.1 On lineage
 

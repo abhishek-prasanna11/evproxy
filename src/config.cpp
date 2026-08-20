@@ -60,6 +60,7 @@ bool load_config(const std::string& path, Config& cfg, std::string& err) {
         else if (key == "max_body_bytes")   cfg.max_body_bytes = std::strtoul(val.c_str(), nullptr, 10);
         else if (key == "io_chunk_bytes")   cfg.io_chunk_bytes = std::strtoul(val.c_str(), nullptr, 10);
         else if (key == "desired_fd_limit") cfg.desired_fd_limit = std::strtol(val.c_str(), nullptr, 10);
+        else if (key == "event_loops")      cfg.event_loops = std::strtoul(val.c_str(), nullptr, 10);
         else if (key == "poll_timeout_ms")  cfg.poll_timeout_ms = std::atoi(val.c_str());
         else if (key == "async_resolve")      cfg.async_resolve = (std::atoi(val.c_str()) != 0);
         else if (key == "resolver_threads")   cfg.resolver_threads = std::strtoul(val.c_str(), nullptr, 10);

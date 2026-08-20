@@ -62,7 +62,12 @@ IoResult read_some(int fd, char* buf, size_t len);
 IoResult write_some(int fd, const char* buf, size_t len);
 
 // Bind and listen. Returns an invalid Fd on failure, with err set.
-Fd listen_on(const std::string& host, int port, int backlog, std::string& err);
+//
+// reuseport is opt-in ON PURPOSE. With SO_REUSEPORT set unconditionally a second evproxy on the same
+// port would silently bind and split traffic instead of failing with EADDRINUSE -- and phase 2's
+// "is this really MY process?" guard depends on that failure.
+Fd listen_on(const std::string& host, int port, int backlog, std::string& err,
+             bool reuseport = false);
 
 // One candidate address for an origin. resolve() returns every candidate so a failed connect can
 // fall through to the next -- that is how a host with an AAAA record but no working IPv6 route

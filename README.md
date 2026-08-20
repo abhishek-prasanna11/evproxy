@@ -18,8 +18,8 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
 curl -x http://127.0.0.1:8888 http://example.com/
 ```
 
-`-b thread_per_conn | thread_pool | event_loop` · `-w` workers · `-C 0|1` cache · `-R 0|1` async
-resolve · `-D ms` injected resolver delay
+`-b thread_per_conn | thread_pool | event_loop` · `-w` workers · `-L` event-loop shards · `-C 0|1`
+cache · `-R 0|1` async resolve · `-D ms` injected resolver delay
 
 ---
 
@@ -71,9 +71,20 @@ slow client, holding a seat. Across three runs the pool measured 2.15 / 2.14 / 2
 every time. No throughput benchmark produces this result, because a throughput benchmark closes each
 connection before opening the next.
 
+**Phase 7 — one loop per core, and a refuted hypothesis.** macOS's `SO_REUSEPORT` does **not**
+load-balance TCP accepts the way Linux's does: with 4 listeners on one port, shard 3 received all
+19,215 connections and shards 0–2 received none. Replaced with an acceptor that round-robins
+descriptors (1,987 / 1,987 / 1,986 / 1,986) — which reintroduces exactly the shared state
+`SO_REUSEPORT` exists to avoid. Sharding then produced **no throughput improvement** (8 shards:
+4,590 req/s median; 1 shard: 5,229), so my own explanation for the deficit does not hold. Correctness
+is fine: 13/13 differential at 1, 2, 4 and 8 shards.
+
 **So the honest conclusion is narrower than "event loops are faster":** this one trades throughput
 for connection density. It wins on memory per connection and on surviving slow clients; it loses on
-requests per second.
+requests per second, and *why* is still an open question.
+
+**Concurrency measured up to 1,000.** C10K is the problem this project reasons about, not an
+operating point it demonstrates.
 
 ## How the comparison is kept honest
 
@@ -134,7 +145,7 @@ result. A benchmark that measures its own load generator is a very convincing wa
 
 ```
 src/        connection.cpp is the shared state machine; backend/ holds the three architectures
-docs/       phase1..6.md, written BEFORE each phase's code
+docs/       phase1..7.md, written BEFORE each phase's code
 tests/      phase1..5.sh — phase1.sh is the differential test, run against all three backends
 bench/      loadgen.py (asyncio, no deps), run.sh, analyse.py
 ```

@@ -26,7 +26,8 @@ void usage() {
                  "  backends: thread_per_conn | thread_pool | event_loop\n"
                  "  -w/-q apply to thread_pool only; -w IS the connections-in-flight ceiling\n"
                  "  -R 0|1 blocking|async resolve   -D ms injected resolver delay\n"
-                 "  -C 0|1 response cache off|on (the I/O benchmark runs with -C 0)\n");
+                 "  -C 0|1 response cache off|on (the I/O benchmark runs with -C 0)\n"
+                 "  -L N   event_loop shards, one kqueue+listener+cache each (default 1)\n");
 }
 
 }  // namespace
@@ -52,6 +53,7 @@ int main(int argc, char** argv) {
         else if (arg == "-p") { cfg.listen_port = std::atoi(next("-p")); port_set = true; }
         else if (arg == "-v") { cfg.log_level = std::atoi(next("-v")); level_set = true; }
         else if (arg == "-w") { cfg.thread_pool_size = std::strtoul(next("-w"), nullptr, 10); workers_set = true; }
+        else if (arg == "-L") { cfg.event_loops = std::strtoul(next("-L"), nullptr, 10); }
         else if (arg == "-C") { cfg.cache_enabled = (std::atoi(next("-C")) != 0); }
         else if (arg == "-R") { cfg.async_resolve = (std::atoi(next("-R")) != 0); }
         else if (arg == "-D") { cfg.resolve_delay_ms = std::atoi(next("-D")); }
@@ -106,7 +108,11 @@ int main(int argc, char** argv) {
         EVP_LOG_ERROR("fd limit below requested -- high-concurrency runs will cap here, not in the proxy");
 
     std::string err;
-    evp::Fd listener = evp::listen_on(cfg.listen_host, cfg.listen_port, cfg.backlog, err);
+    // SO_REUSEPORT only when sharding: the other shards must be able to bind the same port, but
+    // enabling it unconditionally would let a stray second evproxy silently share the port instead
+    // of failing with EADDRINUSE.
+    const bool reuseport = (cfg.backend == evp::BackendKind::EventLoop && cfg.event_loops > 1);
+    evp::Fd listener = evp::listen_on(cfg.listen_host, cfg.listen_port, cfg.backlog, err, reuseport);
     if (!listener.valid()) {
         std::fprintf(stderr, "listen: %s\n", err.c_str());
         return 1;

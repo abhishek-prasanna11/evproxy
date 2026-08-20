@@ -58,7 +58,7 @@ SLOW_PID=$!
 wait_port "$STATIC_PORT" || { echo "static origin failed to start"; exit 1; }
 wait_port "$SLOW_PORT"   || { echo "slow origin failed to start"; exit 1; }
 
-"$PROXY_BIN" -p "$PROXY_PORT" -b "$BACKEND" > "$WORK/proxy.log" 2>&1 &
+"$PROXY_BIN" -p "$PROXY_PORT" -b "$BACKEND" ${EVP_LOOPS:+-L "$EVP_LOOPS"} > "$WORK/proxy.log" 2>&1 &
 PROXY_PID=$!
 wait_port "$PROXY_PORT" || { echo "proxy failed to start:"; cat "$WORK/proxy.log"; exit 1; }
 

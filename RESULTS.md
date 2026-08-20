@@ -39,11 +39,12 @@ p99 latency (ms):
 above 20, and its tail latency is worse.** That is the opposite of what `docs/phase6.md §3`
 predicted, and it is not a measurement artefact. Two reasons, both structural:
 
-**It uses one core out of ten.** A single-threaded event loop is a single thread. The threaded
-backends spread the same work across the whole machine. Relaying 8 KB per request is not free — it
-is `recv`, buffer append, `send`, repeated — so throughput here is bounded by one core's syscall
-rate. This is why nginx runs **one event loop per core** with `SO_REUSEPORT` rather than one loop.
-evproxy implements one loop, and pays for it.
+**~~It uses one core out of ten.~~ — TESTED IN PHASE 7 AND NOT SUPPORTED.** The original explanation
+here was that a single-threaded loop is bounded by one core's syscall rate, which is why nginx runs
+one loop per core. Phase 7 implemented exactly that (§7 below) and **eight loops were not faster than
+one** — median 4,590 vs 5,229 req/s. The explanation was asserted from the architecture, not
+measured, and the measurement does not back it. It is struck rather than deleted because the claim
+was published in an earlier commit.
 
 **It makes two extra syscalls per state transition.** Every `want()` change costs an `EV_DELETE`
 plus an `EV_ADD`, and a single request transitions through `ReadClient → WriteUpstream →
@@ -54,7 +55,8 @@ iteration would recover most of it. Not done.
 
 **So the honest claim is narrower than "event loops are faster":** this event loop trades throughput
 for connection density. Sections 2 and 3 are where it wins, and both are about *connections*, not
-requests per second.
+requests per second. **Why** it is slower is, after phase 7, still an open question — the leading
+remaining candidate is the syscall pair per state transition, untested.
 
 ## 2. Memory per established connection
 
@@ -123,7 +125,54 @@ threaded backends take a mutex on every cache lookup and the event loop takes no
 established is that the difference is measurable at this scale. Given §1, any contention effect is
 buried under the event loop's 3–4× single-core throughput deficit anyway.
 
-## 6. Methodology, and what still limits it
+## 6. Phase 7 — one loop per core, and a refuted hypothesis
+
+### macOS `SO_REUSEPORT` does not load-balance TCP accepts
+
+Four shards, four listeners on one port, 19,215 connections offered:
+
+| shard 0 | shard 1 | shard 2 | shard 3 |
+|---|---|---|---|
+| 0 | 0 | 0 | **19,215** |
+
+The last socket bound received everything. Linux's `SO_REUSEPORT` hashes the 4-tuple across
+listeners (since 3.9); FreeBSD has a separate `SO_REUSEPORT_LB`; macOS has neither for TCP. The
+nginx model is not directly reproducible here.
+
+Replaced with a single acceptor round-robinning descriptors into per-shard inboxes — which
+reintroduces precisely the shared state `SO_REUSEPORT` exists to avoid (a mutex and a pipe write per
+connection). Distribution then becomes exact: **1,987 / 1,987 / 1,986 / 1,986**.
+
+### Sharding did not recover throughput
+
+400 connections, 5 s, 5 runs, cache off:
+
+| shards | median | min–max |
+|---|---|---|
+| 1 | **5,229** req/s | 2,991–5,572 |
+| 8 | **4,590** req/s | 2,163–5,103 |
+
+**The one-core explanation in §1 is not supported.** Correctness is not the issue — the differential
+suite passes 13/13 at 1, 2, 4 and 8 shards.
+
+Two candidates remain, not distinguished by this data: the `EV_DELETE`+`EV_ADD` pair per state
+transition (which phase 4's epoch fix made unconditional) dominating regardless of core count, or
+the single acceptor now being the serialisation point. Batching the kqueue changelist would test the
+first.
+
+**Trust this softly.** Within-configuration spread is ~2×, on a machine where origin, generator and
+proxy share 10 cores. The finding is that sharding produced *no visible improvement*, not a measured
+regression.
+
+### Sharding forced the cache decision
+
+Phase 5's `LruCacheImpl<NullMutex>` header says a second thread makes it a data race. Sharding adds
+one, so each shard gets **its own cache** — preserving the no-lock property at the cost of N× memory
+and a lower effective hit rate, since each shard sees only its share of traffic. That is what
+shard-per-core servers do, and it is the honest resolution of phase 5's safety comment rather than a
+workaround for it.
+
+## 7. Methodology, and what still limits it
 
 **The origin has to be faster than the thing being benchmarked, or it *is* the thing being
 benchmarked.** The first attempt violated this: the proxied arms measured *faster than the origin
@@ -144,7 +193,7 @@ expected answer when there is nothing to multiplex.
 forces `Connection: close`, so every request pays a full TCP setup). Absolute req/s figures are not
 capacity numbers.
 
-## 7. What to trust
+## 8. What to trust
 
 **Supported:**
 - The event loop's throughput deficit (§1) — ~3–4×, low spread at 1000 connections (±9–10 %), with
@@ -157,6 +206,11 @@ capacity numbers.
 
 **Not supported:**
 - Cache lock contention being measurable at this scale (§5).
-- Any conclusion from concurrency 1–20 (§6).
-- That a *well-implemented* event loop is 3–4× slower — one loop per core and a batched kqueue
-  changelist would both narrow the gap. What is measured is this implementation.
+- Any conclusion from concurrency 1–20 (§7).
+- **The "one core out of ten" explanation for the event loop's deficit** — tested in §6 and not
+  borne out. *Why* it is slower remains open.
+- That a *well-implemented* event loop is 3–4× slower. A batched kqueue changelist is the untested
+  candidate. What is measured is this implementation.
+
+**Never measured, and must not be claimed:** concurrency **10,000**. The sweep reaches **1,000**.
+The C10K framing in the README is the *problem statement*, not a measured operating point.

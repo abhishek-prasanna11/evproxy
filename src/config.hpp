@@ -29,6 +29,11 @@ struct Config {
     // makes a working proxy look broken at ~250 connections and silently caps any benchmark.
     long desired_fd_limit = 10240;
 
+    // event_loop only. >1 runs N independent loops, each with its own kqueue, listener
+    // (SO_REUSEPORT) and cache. Phase 7 tests whether the event loop's throughput deficit really is
+    // "one core out of ten".
+    size_t event_loops = 1;
+
     int poll_timeout_ms = 30000;
 
     // Resolver. getaddrinfo blocks and has no non-blocking form, so in the event loop one slow

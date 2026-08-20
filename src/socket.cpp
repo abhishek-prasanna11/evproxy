@@ -60,7 +60,8 @@ static void suppress_sigpipe(int fd) {
     ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
 }
 
-Fd listen_on(const std::string& host, int port, int backlog, std::string& err) {
+Fd listen_on(const std::string& host, int port, int backlog, std::string& err,
+             bool reuseport) {
     addrinfo hints{};
     hints.ai_family   = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -82,6 +83,9 @@ Fd listen_on(const std::string& host, int port, int backlog, std::string& err) {
 
         int on = 1;
         ::setsockopt(fd.get(), SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+#ifdef SO_REUSEPORT
+        if (reuseport) ::setsockopt(fd.get(), SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
+#endif
         suppress_sigpipe(fd.get());
 
         if (::bind(fd.get(), p->ai_addr, p->ai_addrlen) == 0 &&
