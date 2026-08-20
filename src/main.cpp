@@ -19,8 +19,9 @@ void on_signal(int) {
 
 void usage() {
     std::fprintf(stderr,
-                 "usage: evproxy [-c config] [-p port] [-b backend] [-v level]\n"
-                 "  backends: thread_per_conn | thread_pool | event_loop\n");
+                 "usage: evproxy [-c config] [-p port] [-b backend] [-v level] [-w workers] [-q queuecap]\n"
+                 "  backends: thread_per_conn | thread_pool | event_loop\n"
+                 "  -w/-q apply to thread_pool only; -w IS the connections-in-flight ceiling\n");
 }
 
 }  // namespace
@@ -30,6 +31,7 @@ int main(int argc, char** argv) {
     std::string config_path;
 
     bool port_set = false, level_set = false, backend_set = false;
+    bool workers_set = false, queue_set = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -44,6 +46,8 @@ int main(int argc, char** argv) {
         if      (arg == "-c") config_path = next("-c");
         else if (arg == "-p") { cfg.listen_port = std::atoi(next("-p")); port_set = true; }
         else if (arg == "-v") { cfg.log_level = std::atoi(next("-v")); level_set = true; }
+        else if (arg == "-w") { cfg.thread_pool_size = std::strtoul(next("-w"), nullptr, 10); workers_set = true; }
+        else if (arg == "-q") { cfg.job_queue_capacity = std::strtoul(next("-q"), nullptr, 10); queue_set = true; }
         else if (arg == "-b") {
             const char* name = next("-b");
             if (!evp::parse_backend(name, cfg.backend)) {
@@ -72,11 +76,15 @@ int main(int argc, char** argv) {
         const evp::BackendKind flag_backend = cfg.backend;
         const int              flag_port    = cfg.listen_port;
         const int              flag_level   = cfg.log_level;
+        const size_t           flag_workers = cfg.thread_pool_size;
+        const size_t           flag_queue   = cfg.job_queue_capacity;
 
         cfg = from_file;
-        if (port_set)    cfg.listen_port = flag_port;
-        if (level_set)   cfg.log_level   = flag_level;
-        if (backend_set) cfg.backend     = flag_backend;
+        if (port_set)    cfg.listen_port        = flag_port;
+        if (level_set)   cfg.log_level          = flag_level;
+        if (backend_set) cfg.backend            = flag_backend;
+        if (workers_set) cfg.thread_pool_size   = flag_workers;
+        if (queue_set)   cfg.job_queue_capacity = flag_queue;
     }
 
     evp::log_level() = static_cast<evp::LogLevel>(cfg.log_level);

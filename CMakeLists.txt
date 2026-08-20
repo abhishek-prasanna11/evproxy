@@ -30,7 +30,10 @@ add_executable(evproxy
   src/socket.cpp
   src/http.cpp
   src/connection.cpp
+  src/conn_queue.cpp
+  src/backend/factory.cpp
   src/backend/thread_per_conn.cpp
+  src/backend/thread_pool.cpp
 )
 
 target_include_directories(evproxy PRIVATE src)

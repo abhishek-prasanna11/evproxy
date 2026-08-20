@@ -14,6 +14,11 @@ struct Config {
 
     BackendKind backend = BackendKind::ThreadPerConn;
 
+    // thread_pool only. The pool's real limit is connections in flight, not requests/sec: a worker
+    // blocked on a slow client is holding a seat, not doing work. thread_pool_size IS that ceiling.
+    size_t thread_pool_size   = 64;
+    size_t job_queue_capacity = 256;
+
     // Bounded so a client cannot make us buffer without limit. A request whose headers exceed this
     // gets 400 rather than growing the buffer forever.
     size_t max_header_bytes = 16 * 1024;

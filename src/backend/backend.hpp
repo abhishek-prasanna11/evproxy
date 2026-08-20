@@ -24,6 +24,11 @@ public:
     virtual const char* name() const = 0;
 };
 
+// One factory per architecture; make_backend dispatches on cfg.backend. Kept separate so adding a
+// backend does not touch another backend's file.
+std::unique_ptr<Backend> make_thread_per_conn(const Config& cfg);
+std::unique_ptr<Backend> make_thread_pool(const Config& cfg);
+
 std::unique_ptr<Backend> make_backend(const Config& cfg);
 
 }  // namespace evp

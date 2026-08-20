@@ -88,16 +88,8 @@ private:
 
 }  // namespace
 
-std::unique_ptr<Backend> make_backend(const Config& cfg) {
-    switch (cfg.backend) {
-        case BackendKind::ThreadPerConn:
-            return std::make_unique<ThreadPerConn>(cfg);
-        case BackendKind::ThreadPool:
-        case BackendKind::EventLoop:
-            // Phases 2 and 3.
-            return nullptr;
-    }
-    return nullptr;
+std::unique_ptr<Backend> make_thread_per_conn(const Config& cfg) {
+    return std::make_unique<ThreadPerConn>(cfg);
 }
 
 }  // namespace evp
