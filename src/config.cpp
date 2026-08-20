@@ -61,6 +61,10 @@ bool load_config(const std::string& path, Config& cfg, std::string& err) {
         else if (key == "io_chunk_bytes")   cfg.io_chunk_bytes = std::strtoul(val.c_str(), nullptr, 10);
         else if (key == "desired_fd_limit") cfg.desired_fd_limit = std::strtol(val.c_str(), nullptr, 10);
         else if (key == "poll_timeout_ms")  cfg.poll_timeout_ms = std::atoi(val.c_str());
+        else if (key == "async_resolve")      cfg.async_resolve = (std::atoi(val.c_str()) != 0);
+        else if (key == "resolver_threads")   cfg.resolver_threads = std::strtoul(val.c_str(), nullptr, 10);
+        else if (key == "dns_cache_ttl_s")    cfg.dns_cache_ttl_s = std::atoi(val.c_str());
+        else if (key == "resolve_delay_ms")   cfg.resolve_delay_ms = std::atoi(val.c_str());
         else if (key == "thread_pool_size")   cfg.thread_pool_size = std::strtoul(val.c_str(), nullptr, 10);
         else if (key == "job_queue_capacity") cfg.job_queue_capacity = std::strtoul(val.c_str(), nullptr, 10);
         else if (key == "log_level")        cfg.log_level = std::atoi(val.c_str());

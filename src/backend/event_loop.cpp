@@ -9,6 +9,7 @@
 
 #include "backend/backend.hpp"
 #include "connection.hpp"
+#include "resolver.hpp"
 #include "log.hpp"
 
 namespace evp {
@@ -25,7 +26,7 @@ namespace {
 // benchmark shows the event loop winning everywhere, the benchmark is wrong.
 class EventLoop final : public Backend {
 public:
-    explicit EventLoop(const Config& cfg) : cfg_(cfg) {}
+    EventLoop(const Config& cfg, Resolver& resolver) : cfg_(cfg), resolver_(resolver) {}
 
     const char* name() const override { return "event_loop"; }
 
@@ -113,14 +114,14 @@ private:
             }
 
             ++accepted_;
-            auto conn = std::make_unique<Connection>(std::move(a.conn), cfg_, next_id_++);
+            auto conn = std::make_unique<Connection>(std::move(a.conn), cfg_, resolver_, next_id_++);
             Connection* raw = conn.get();
 
             int  fd    = raw->want_fd();
             bool write = raw->want_write();
             if (fd < 0 || !arm(fd, write, raw)) continue;  // conn destroyed here
 
-            live_[raw] = {std::move(conn), fd, write};
+            live_[raw] = {std::move(conn), fd, write, raw->epoch()};
         }
     }
 
@@ -130,8 +131,9 @@ private:
 
         // Capture the registration BEFORE on_ready(), which may close this very descriptor. Reading
         // want_fd() afterwards could hand us a number that has already been reused.
-        const int  old_fd    = it->second.fd;
-        const bool old_write = it->second.write;
+        const int      old_fd    = it->second.fd;
+        const bool     old_write = it->second.write;
+        const uint64_t old_epoch = it->second.epoch;
 
         conn->on_ready();
 
@@ -150,7 +152,12 @@ private:
             return;
         }
 
-        if (new_fd != old_fd || new_write != old_write) {
+        // Compare the EPOCH, not just (fd, direction). Trying the next candidate address closes
+        // one socket and opens another, which very often reuses the same fd number -- so the pair
+        // can be identical while the kernel has already dropped the registration along with the
+        // closed descriptor. Trusting (fd, direction) leaves the new socket registered nowhere and
+        // the connection hangs forever.
+        if (conn->epoch() != old_epoch) {
             // Exactly one registration per connection. That is what makes the EVFILT_WRITE trap
             // structurally impossible: a write filter exists only while there are bytes to flush,
             // so an always-writable socket cannot spin the loop.
@@ -161,6 +168,7 @@ private:
             }
             it->second.fd    = new_fd;
             it->second.write = new_write;
+            it->second.epoch = conn->epoch();
         }
     }
 
@@ -192,9 +200,11 @@ private:
         std::unique_ptr<Connection> conn;
         int                         fd    = -1;
         bool                        write = false;
+        uint64_t                    epoch = 0;
     };
 
     const Config&                            cfg_;
+    Resolver&                                resolver_;
     Fd                                       kq_;
     Fd                                       listener_;
     std::unordered_map<Connection*, Slot>    live_;
@@ -205,8 +215,8 @@ private:
 
 }  // namespace
 
-std::unique_ptr<Backend> make_event_loop(const Config& cfg) {
-    return std::make_unique<EventLoop>(cfg);
+std::unique_ptr<Backend> make_event_loop(const Config& cfg, Resolver& resolver) {
+    return std::make_unique<EventLoop>(cfg, resolver);
 }
 
 }  // namespace evp

@@ -1,11 +1,13 @@
 #include "connection.hpp"
 
+#include <unistd.h>
+
 #include "log.hpp"
 
 namespace evp {
 
-Connection::Connection(Fd client, const Config& cfg, uint64_t id)
-    : client_(std::move(client)), cfg_(cfg), id_(id) {
+Connection::Connection(Fd client, const Config& cfg, Resolver& resolver, uint64_t id)
+    : client_(std::move(client)), cfg_(cfg), resolver_(resolver), id_(id) {
     set_nonblocking(client_.get());
 }
 
@@ -17,6 +19,8 @@ int Connection::want_fd() const {
         case Want::ReadUpstream:
         case Want::WriteUpstream:
             return upstream_.get();
+        case Want::ReadResolver:
+            return resolve_job_ ? resolve_job_->read_end.get() : -1;
         case Want::None:
             return -1;
     }
@@ -28,6 +32,7 @@ void Connection::on_ready() {
         case Want::ReadClient:    do_read_client();   break;
         case Want::WriteClient:   do_write_client();  break;
         case Want::ReadUpstream:  do_read_upstream(); break;
+        case Want::ReadResolver:  finish_resolve();   break;
         case Want::WriteUpstream:
             // Writability on the upstream socket means two different things depending on state:
             // "the connect finished" while Connecting, "there is room to send" afterwards.
@@ -43,12 +48,13 @@ void Connection::fail_with(std::string response) {
     out_client_     = std::move(response);
     out_client_off_ = 0;
     state_          = State::Failing;
-    want_           = Want::WriteClient;
+    set_want(Want::WriteClient);
 }
 
 void Connection::finish() {
     state_ = State::Done;
-    want_  = Want::None;
+    set_want(Want::None);
+    resolve_job_.reset();
     upstream_.reset();
     client_.reset();
 }
@@ -99,10 +105,69 @@ void Connection::do_read_client() {
     out_upstream_     = build_upstream_request(req_, body);
     out_upstream_off_ = 0;
 
-    // STILL BLOCKING, deliberately: getaddrinfo has no non-blocking form, and phase 4's experiment
-    // is to measure the stall it inflicts on unrelated connections before fixing it.
+    begin_resolve();
+}
+
+void Connection::begin_resolve() {
     std::string err;
-    if (!resolve(req_.host, req_.port, endpoints_, err)) {
+
+    if (!cfg_.async_resolve) {
+        // THE NAIVE ARM. getaddrinfo has no non-blocking form, so this call blocks whatever thread
+        // it is on. In the event loop that thread is the ONLY thread: every other connection stops
+        // making progress until this returns, however unrelated it is.
+        if (!resolver_.resolve_blocking(req_.host, req_.port, endpoints_, err)) {
+            EVP_LOG_ERROR("conn %llu: resolve %s:%s failed: %s",
+                          (unsigned long long)id_, req_.host.c_str(), req_.port.c_str(), err.c_str());
+            fail_with(error_response(502, "Bad Gateway"));
+            return;
+        }
+        endpoint_idx_ = 0;
+        begin_connect();
+        return;
+    }
+
+    switch (resolver_.start(req_.host, req_.port, endpoints_, resolve_job_, err)) {
+        case ResolveStatus::Hit:
+            // Costs nothing: no descriptors, no thread hop. This is the common case, and it is why
+            // moving DNS off the loop stays cheap.
+            endpoint_idx_ = 0;
+            begin_connect();
+            return;
+
+        case ResolveStatus::Pending:
+            state_ = State::Resolving;
+            set_want(Want::ReadResolver);
+            return;
+
+        case ResolveStatus::Failed:
+            EVP_LOG_ERROR("conn %llu: resolve %s:%s failed: %s",
+                          (unsigned long long)id_, req_.host.c_str(), req_.port.c_str(), err.c_str());
+            fail_with(error_response(502, "Bad Gateway"));
+            return;
+    }
+}
+
+void Connection::finish_resolve() {
+    // Drain the wakeup byte so the descriptor does not stay readable. recv() does not work on a
+    // pipe, so this is a plain read.
+    char    buf[8];
+    ssize_t drained = ::read(resolve_job_->read_end.get(), buf, sizeof(buf));
+    (void)drained;
+
+    // Acquire, pairing with the resolver thread's release store. Without it the reads below are a
+    // data race: the pipe write is a syscall, but the memory model does not order these fields on
+    // the strength of that.
+    if (!resolve_job_->ready.load(std::memory_order_acquire)) return;  // spurious wakeup
+
+    const bool ok = resolve_job_->ok;
+    if (ok) endpoints_ = std::move(resolve_job_->endpoints);
+    const std::string err = resolve_job_->err;
+
+    // Release the job here so the pipe descriptors go back immediately rather than lingering for
+    // the life of the connection.
+    resolve_job_.reset();
+
+    if (!ok) {
         EVP_LOG_ERROR("conn %llu: resolve %s:%s failed: %s",
                       (unsigned long long)id_, req_.host.c_str(), req_.port.c_str(), err.c_str());
         fail_with(error_response(502, "Bad Gateway"));
@@ -128,14 +193,14 @@ void Connection::begin_connect() {
         if (st == ConnectStatus::Connected) {
             // Loopback usually completes immediately; skip straight to sending.
             state_ = State::SendingUpstream;
-            want_  = Want::WriteUpstream;
+            set_want(Want::WriteUpstream);
             return;
         }
 
         // InProgress: completion arrives as writability, and writability alone is NOT proof of
         // success -- finish_connect() is where that gets checked.
         state_ = State::Connecting;
-        want_  = Want::WriteUpstream;
+        set_want(Want::WriteUpstream);
         return;
     }
 
@@ -162,7 +227,7 @@ void Connection::finish_connect() {
                   req_.path.c_str(), upstream_.get());
 
     state_ = State::SendingUpstream;
-    want_  = Want::WriteUpstream;
+    set_want(Want::WriteUpstream);
 }
 
 void Connection::do_write_upstream() {
@@ -182,7 +247,7 @@ void Connection::do_write_upstream() {
     out_upstream_.clear();
     out_upstream_off_ = 0;
     state_            = State::Relaying;
-    want_             = Want::ReadUpstream;
+    set_want(Want::ReadUpstream);
 }
 
 void Connection::do_read_upstream() {
@@ -198,12 +263,12 @@ void Connection::do_read_upstream() {
         upstream_eof_ = true;
         upstream_.reset();
         if (out_client_off_ >= out_client_.size()) finish();
-        else want_ = Want::WriteClient;
+        else set_want(Want::WriteClient);
         return;
     }
 
     out_client_.append(buf, r.bytes);
-    want_ = Want::WriteClient;
+    set_want(Want::WriteClient);
 }
 
 void Connection::do_write_client() {
@@ -223,7 +288,7 @@ void Connection::do_write_client() {
         finish();
         return;
     }
-    want_ = Want::ReadUpstream;
+    set_want(Want::ReadUpstream);
 }
 
 }  // namespace evp

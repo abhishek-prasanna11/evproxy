@@ -155,6 +155,16 @@ else
 fi
 PROXY_PID=""
 
+# The proxy's stderr goes to proxy.log, NOT to this script's stderr -- so grepping this script's
+# output for sanitizer reports finds nothing even when the proxy is screaming. That mistake made
+# several earlier "TSan clean" claims vacuous. Assert on the proxy's own log.
+if grep -qE "ThreadSanitizer|AddressSanitizer|runtime error:|LeakSanitizer" "$WORK/proxy.log" 2>/dev/null; then
+  cp "$WORK/proxy.log" /tmp/evp_sanitizer_report.log
+  bad "proxy log free of sanitizer reports" "see /tmp/evp_sanitizer_report.log"
+else
+  ok "proxy log free of sanitizer reports"
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 (( FAIL == 0 ))

@@ -31,6 +31,17 @@ struct Config {
 
     int poll_timeout_ms = 30000;
 
+    // Resolver. getaddrinfo blocks and has no non-blocking form, so in the event loop one slow
+    // lookup stalls every other connection. async_resolve=0 is the naive arm, kept so both can be
+    // measured from one binary.
+    bool   async_resolve    = true;
+    size_t resolver_threads = 4;
+    int    dns_cache_ttl_s  = 60;
+
+    // Fault injection only: sleeps inside the resolve path to model a slow resolver. Stated as
+    // injection rather than dressed up as a natural measurement.
+    int resolve_delay_ms = 0;
+
     int log_level = 2;
 };
 

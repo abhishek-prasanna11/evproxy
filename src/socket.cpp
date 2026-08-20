@@ -23,6 +23,15 @@ bool set_nonblocking(int fd) {
     return ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
 }
 
+bool make_pipe(Fd& read_end, Fd& write_end) {
+    int fds[2];
+    if (::pipe(fds) != 0) return false;
+    read_end.reset(fds[0]);
+    write_end.reset(fds[1]);
+    if (!set_nonblocking(read_end.get())) return false;
+    return true;
+}
+
 IoResult read_some(int fd, char* buf, size_t len) {
     for (;;) {
         ssize_t n = ::recv(fd, buf, len, 0);

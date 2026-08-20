@@ -9,7 +9,7 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-add_compile_options(-Wall -Wextra -Wpedantic)
+add_compile_options(-Wall -Wextra -Wpedantic -Werror)
 
 # -DEVP_SANITIZE=address|thread  (benchmarks must be built without any sanitizer)
 if(EVP_SANITIZE)
@@ -31,6 +31,7 @@ add_executable(evproxy
   src/http.cpp
   src/connection.cpp
   src/conn_queue.cpp
+  src/resolver.cpp
   src/backend/factory.cpp
   src/backend/thread_per_conn.cpp
   src/backend/thread_pool.cpp

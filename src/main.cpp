@@ -6,6 +6,7 @@
 #include "backend/backend.hpp"
 #include "config.hpp"
 #include "log.hpp"
+#include "resolver.hpp"
 #include "socket.hpp"
 
 namespace {
@@ -21,7 +22,8 @@ void usage() {
     std::fprintf(stderr,
                  "usage: evproxy [-c config] [-p port] [-b backend] [-v level] [-w workers] [-q queuecap]\n"
                  "  backends: thread_per_conn | thread_pool | event_loop\n"
-                 "  -w/-q apply to thread_pool only; -w IS the connections-in-flight ceiling\n");
+                 "  -w/-q apply to thread_pool only; -w IS the connections-in-flight ceiling\n"
+                 "  -R 0|1 blocking|async resolve   -D ms injected resolver delay\n");
 }
 
 }  // namespace
@@ -47,6 +49,8 @@ int main(int argc, char** argv) {
         else if (arg == "-p") { cfg.listen_port = std::atoi(next("-p")); port_set = true; }
         else if (arg == "-v") { cfg.log_level = std::atoi(next("-v")); level_set = true; }
         else if (arg == "-w") { cfg.thread_pool_size = std::strtoul(next("-w"), nullptr, 10); workers_set = true; }
+        else if (arg == "-R") { cfg.async_resolve = (std::atoi(next("-R")) != 0); }
+        else if (arg == "-D") { cfg.resolve_delay_ms = std::atoi(next("-D")); }
         else if (arg == "-q") { cfg.job_queue_capacity = std::strtoul(next("-q"), nullptr, 10); queue_set = true; }
         else if (arg == "-b") {
             const char* name = next("-b");
@@ -104,7 +108,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto backend = evp::make_backend(cfg);
+    // Owns the resolver threads. Declared before the backend and destroyed after it, so no
+    // Connection can still be holding a ResolveJob when the resolver threads are joined.
+    evp::Resolver resolver(cfg.async_resolve ? cfg.resolver_threads : 0,
+                           cfg.dns_cache_ttl_s, cfg.resolve_delay_ms);
+
+    auto backend = evp::make_backend(cfg, resolver);
     if (!backend) {
         std::fprintf(stderr, "backend '%s' is not implemented yet\n", evp::backend_name(cfg.backend));
         return 2;
@@ -119,11 +128,18 @@ int main(int argc, char** argv) {
     sigaction(SIGTERM, &sa, nullptr);
     signal(SIGPIPE, SIG_IGN);
 
-    EVP_LOG_INFO("evproxy listening on %s:%d backend=%s",
-                 cfg.listen_host.c_str(), cfg.listen_port, backend->name());
+    EVP_LOG_INFO("evproxy listening on %s:%d backend=%s resolve=%s",
+                 cfg.listen_host.c_str(), cfg.listen_port, backend->name(),
+                 cfg.async_resolve ? "async" : "blocking");
+    if (cfg.resolve_delay_ms > 0)
+        EVP_LOG_INFO("resolve_delay_ms=%d -- FAULT INJECTION is active, not a natural measurement",
+                     cfg.resolve_delay_ms);
 
     backend->run(std::move(listener));
+    resolver.shutdown();
 
+    EVP_LOG_INFO("resolver: %llu lookups, %llu cache hits",
+                 (unsigned long long)resolver.lookups(), (unsigned long long)resolver.cache_hits());
     EVP_LOG_INFO("clean shutdown");
     return 0;
 }

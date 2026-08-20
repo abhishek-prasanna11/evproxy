@@ -53,6 +53,10 @@ struct IoResult {
 
 bool set_nonblocking(int fd);
 
+// Both ends non-blocking. Used as a wakeup channel so an async result can be waited on as an
+// ordinary readable descriptor -- which is what lets all three backends handle it unchanged.
+bool make_pipe(Fd& read_end, Fd& write_end);
+
 // One non-blocking read into buf / write from buf. EINTR is retried internally.
 IoResult read_some(int fd, char* buf, size_t len);
 IoResult write_some(int fd, const char* buf, size_t len);
