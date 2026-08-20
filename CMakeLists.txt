@@ -34,6 +34,7 @@ add_executable(evproxy
   src/backend/factory.cpp
   src/backend/thread_per_conn.cpp
   src/backend/thread_pool.cpp
+  src/backend/event_loop.cpp
 )
 
 target_include_directories(evproxy PRIVATE src)

@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <string>
+#include <sys/socket.h>
+#include <vector>
 
 namespace evp {
 
@@ -58,9 +60,33 @@ IoResult write_some(int fd, const char* buf, size_t len);
 // Bind and listen. Returns an invalid Fd on failure, with err set.
 Fd listen_on(const std::string& host, int port, int backlog, std::string& err);
 
-// Blocking resolve + connect. Deliberately blocking in phase 1 -- phase 4's experiment is to
-// measure the damage this does inside an event loop and then fix it.
-Fd connect_to(const std::string& host, const std::string& port, std::string& err);
+// One candidate address for an origin. resolve() returns every candidate so a failed connect can
+// fall through to the next -- that is how a host with an AAAA record but no working IPv6 route
+// still gets proxied.
+struct Endpoint {
+    sockaddr_storage addr{};
+    socklen_t        len      = 0;
+    int              family   = 0;
+    int              socktype = 0;
+    int              protocol = 0;
+};
+
+// STILL BLOCKING, deliberately. getaddrinfo has no non-blocking form, and inside an event loop one
+// slow lookup stalls every other connection. Phase 4's experiment is to measure that stall and then
+// move resolution to its own threads.
+bool resolve(const std::string& host, const std::string& port, std::vector<Endpoint>& out,
+             std::string& err);
+
+enum class ConnectStatus { Connected, InProgress, Failed };
+
+// Creates a non-blocking socket and starts connecting. InProgress means connect() returned
+// EINPROGRESS, which is success-so-far: completion arrives as a WRITABILITY event.
+ConnectStatus start_connect(const Endpoint& ep, Fd& out, std::string& err);
+
+// Call this once the connecting socket becomes writable. A socket whose connect FAILED also becomes
+// writable, so this check is the only thing standing between you and writing a request into a dead
+// connection.
+bool connect_succeeded(int fd, std::string& err);
 
 // Accept one pending connection from a non-blocking listener. Shared by all three backends so they
 // handle the fd ceiling identically -- EMFILE is a resource limit, not a proxy bug, and it is the

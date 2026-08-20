@@ -25,11 +25,16 @@ int Connection::want_fd() const {
 
 void Connection::on_ready() {
     switch (want_) {
-        case Want::ReadClient:    do_read_client();    break;
-        case Want::WriteClient:   do_write_client();   break;
-        case Want::ReadUpstream:  do_read_upstream();  break;
-        case Want::WriteUpstream: do_write_upstream(); break;
-        case Want::None:          finish();            break;
+        case Want::ReadClient:    do_read_client();   break;
+        case Want::WriteClient:   do_write_client();  break;
+        case Want::ReadUpstream:  do_read_upstream(); break;
+        case Want::WriteUpstream:
+            // Writability on the upstream socket means two different things depending on state:
+            // "the connect finished" while Connecting, "there is room to send" afterwards.
+            if (state_ == State::Connecting) finish_connect();
+            else                             do_write_upstream();
+            break;
+        case Want::None:          finish();           break;
     }
 }
 
@@ -90,28 +95,74 @@ void Connection::do_read_client() {
     size_t needed = req_.header_bytes + req_.content_length;
     if (in_client_.size() < needed) return;
 
-    std::string body = in_client_.substr(req_.header_bytes, req_.content_length);
+    std::string body  = in_client_.substr(req_.header_bytes, req_.content_length);
+    out_upstream_     = build_upstream_request(req_, body);
+    out_upstream_off_ = 0;
 
-    // Blocking resolve + connect, deliberately. Phase 4's experiment measures the damage this does
-    // inside an event loop and then fixes it -- building the naive version first is the point.
+    // STILL BLOCKING, deliberately: getaddrinfo has no non-blocking form, and phase 4's experiment
+    // is to measure the stall it inflicts on unrelated connections before fixing it.
     std::string err;
-    upstream_ = connect_to(req_.host, req_.port, err);
-    if (!upstream_.valid()) {
-        EVP_LOG_ERROR("conn %llu: upstream %s:%s failed: %s",
+    if (!resolve(req_.host, req_.port, endpoints_, err)) {
+        EVP_LOG_ERROR("conn %llu: resolve %s:%s failed: %s",
                       (unsigned long long)id_, req_.host.c_str(), req_.port.c_str(), err.c_str());
         fail_with(error_response(502, "Bad Gateway"));
         return;
     }
-    set_nonblocking(upstream_.get());
+
+    endpoint_idx_ = 0;
+    begin_connect();
+}
+
+void Connection::begin_connect() {
+    std::string err;
+
+    while (endpoint_idx_ < endpoints_.size()) {
+        Fd            fd;
+        ConnectStatus st = start_connect(endpoints_[endpoint_idx_], fd, err);
+        ++endpoint_idx_;
+
+        if (st == ConnectStatus::Failed) continue;  // try the next candidate address
+
+        upstream_ = std::move(fd);
+
+        if (st == ConnectStatus::Connected) {
+            // Loopback usually completes immediately; skip straight to sending.
+            state_ = State::SendingUpstream;
+            want_  = Want::WriteUpstream;
+            return;
+        }
+
+        // InProgress: completion arrives as writability, and writability alone is NOT proof of
+        // success -- finish_connect() is where that gets checked.
+        state_ = State::Connecting;
+        want_  = Want::WriteUpstream;
+        return;
+    }
+
+    EVP_LOG_ERROR("conn %llu: upstream %s:%s unreachable: %s",
+                  (unsigned long long)id_, req_.host.c_str(), req_.port.c_str(), err.c_str());
+    fail_with(error_response(502, "Bad Gateway"));
+}
+
+void Connection::finish_connect() {
+    std::string err;
+
+    // THE CHECK EVERYONE SKIPS. A socket whose connect failed also becomes writable, so without
+    // this the proxy writes a request into a dead connection and fails confusingly later.
+    if (!connect_succeeded(upstream_.get(), err)) {
+        EVP_LOG_DEBUG("conn %llu: candidate %zu failed: %s",
+                      (unsigned long long)id_, endpoint_idx_ - 1, err.c_str());
+        upstream_.reset();
+        begin_connect();  // fall through to the next address, or 502 when exhausted
+        return;
+    }
 
     EVP_LOG_DEBUG("conn %llu: %s %s%s -> fd %d",
                   (unsigned long long)id_, req_.method.c_str(), req_.host.c_str(),
                   req_.path.c_str(), upstream_.get());
 
-    out_upstream_     = build_upstream_request(req_, body);
-    out_upstream_off_ = 0;
-    state_            = State::SendingUpstream;
-    want_             = Want::WriteUpstream;
+    state_ = State::SendingUpstream;
+    want_  = Want::WriteUpstream;
 }
 
 void Connection::do_write_upstream() {

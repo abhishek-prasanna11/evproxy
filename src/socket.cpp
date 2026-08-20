@@ -88,7 +88,8 @@ Fd listen_on(const std::string& host, int port, int backlog, std::string& err) {
     return listener;
 }
 
-Fd connect_to(const std::string& host, const std::string& port, std::string& err) {
+bool resolve(const std::string& host, const std::string& port, std::vector<Endpoint>& out,
+             std::string& err) {
     addrinfo hints{};
     hints.ai_family   = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -97,25 +98,73 @@ Fd connect_to(const std::string& host, const std::string& port, std::string& err
     int       rc  = ::getaddrinfo(host.c_str(), port.c_str(), &hints, &res);
     if (rc != 0) {
         err = std::string("getaddrinfo(") + host + "): " + ::gai_strerror(rc);
-        return Fd{};
+        return false;
     }
 
-    Fd out;
+    out.clear();
     for (addrinfo* p = res; p != nullptr; p = p->ai_next) {
-        Fd fd{::socket(p->ai_family, p->ai_socktype, p->ai_protocol)};
-        if (!fd.valid()) continue;
-        suppress_sigpipe(fd.get());
+        if (p->ai_addrlen > sizeof(sockaddr_storage)) continue;
+        Endpoint ep;
+        std::memcpy(&ep.addr, p->ai_addr, p->ai_addrlen);
+        ep.len      = p->ai_addrlen;
+        ep.family   = p->ai_family;
+        ep.socktype = p->ai_socktype;
+        ep.protocol = p->ai_protocol;
+        out.push_back(ep);
+    }
+    ::freeaddrinfo(res);
 
-        if (::connect(fd.get(), p->ai_addr, p->ai_addrlen) == 0) {
-            out = std::move(fd);
-            break;
-        }
-        err = std::string("connect(") + host + "): " + std::strerror(errno);
+    if (out.empty()) {
+        err = "no usable address for " + host;
+        return false;
+    }
+    return true;
+}
+
+ConnectStatus start_connect(const Endpoint& ep, Fd& out, std::string& err) {
+    Fd fd{::socket(ep.family, ep.socktype, ep.protocol)};
+    if (!fd.valid()) {
+        err = std::string("socket: ") + std::strerror(errno);
+        return ConnectStatus::Failed;
+    }
+    suppress_sigpipe(fd.get());
+
+    // Non-blocking BEFORE connect, or connect() blocks regardless of what we do afterwards.
+    if (!set_nonblocking(fd.get())) {
+        err = std::string("set_nonblocking: ") + std::strerror(errno);
+        return ConnectStatus::Failed;
     }
 
-    ::freeaddrinfo(res);
-    if (!out.valid() && err.empty()) err = "no usable address";
-    return out;
+    int rc = ::connect(fd.get(), reinterpret_cast<const sockaddr*>(&ep.addr), ep.len);
+    if (rc == 0) {
+        out = std::move(fd);
+        return ConnectStatus::Connected;  // loopback usually lands here immediately
+    }
+
+    if (errno == EINPROGRESS || errno == EINTR) {
+        // Success-so-far. Completion is reported as a writability event, and the socket becoming
+        // writable does NOT by itself mean the connect worked -- see connect_succeeded().
+        out = std::move(fd);
+        return ConnectStatus::InProgress;
+    }
+
+    err = std::string("connect: ") + std::strerror(errno);
+    return ConnectStatus::Failed;
+}
+
+bool connect_succeeded(int fd, std::string& err) {
+    int       so_error = 0;
+    socklen_t len      = sizeof(so_error);
+
+    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &len) != 0) {
+        err = std::string("getsockopt(SO_ERROR): ") + std::strerror(errno);
+        return false;
+    }
+    if (so_error != 0) {
+        err = std::string("connect: ") + std::strerror(so_error);
+        return false;
+    }
+    return true;
 }
 
 AcceptResult accept_one(int listener_fd) {

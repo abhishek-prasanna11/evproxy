@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "config.hpp"
 #include "http.hpp"
@@ -41,12 +42,17 @@ public:
     uint64_t id() const { return id_; }
 
 private:
-    enum class State { ReadingRequest, SendingUpstream, Relaying, Failing, Done };
+    enum class State { ReadingRequest, Connecting, SendingUpstream, Relaying, Failing, Done };
 
     void do_read_client();
     void do_write_client();
     void do_read_upstream();
     void do_write_upstream();
+
+    // Starts a non-blocking connect to endpoints_[endpoint_idx_], advancing through the candidate
+    // list until one is InProgress/Connected or all have failed.
+    void begin_connect();
+    void finish_connect();
 
     // Abandon the exchange and send `body` to the client instead. The upstream fd (if any) is
     // dropped immediately: nothing further can be relayed.
@@ -63,6 +69,9 @@ private:
 
     Request     req_;
     bool        parsed_ = false;
+
+    std::vector<Endpoint> endpoints_;
+    size_t                endpoint_idx_ = 0;
 
     std::string in_client_;        // raw request bytes as they arrive
     std::string out_upstream_;     // rebuilt request awaiting flush to origin
