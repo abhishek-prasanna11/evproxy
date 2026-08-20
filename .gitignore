@@ -1,0 +1,5 @@
+build/
+build-asan/
+build-tsan/
+*.dSYM/
+.DS_Store
