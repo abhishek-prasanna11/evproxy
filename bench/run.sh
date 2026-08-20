@@ -23,7 +23,12 @@ WORK="$(mktemp -d /tmp/evp_bench.XXXXXX)"
 
 cleanup() {
   [[ -n "${PROXY_PID:-}"  ]] && kill -KILL "$PROXY_PID"  2>/dev/null
+  # fast_origin.py FORKS: killing $ORIGIN_PID leaves 3 children holding port 18080, which then
+  # serve the benchmark's payload to the next thing that runs and fails its assertions with a
+  # baffling diff. Kill the whole family by name.
   [[ -n "${ORIGIN_PID:-}" ]] && kill "$ORIGIN_PID" 2>/dev/null
+  pkill -f "bench/fast_origin.py" 2>/dev/null
+  pkill -f "tests/slow_origin.py" 2>/dev/null
   rm -rf "$WORK"
 }
 trap cleanup EXIT

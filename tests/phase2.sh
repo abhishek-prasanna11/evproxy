@@ -35,8 +35,12 @@ wait_port() {
   return 1
 }
 
+# -C 0 is REQUIRED here, not incidental. Phase 5's cache defaults to ON, and these experiments
+# request the SAME url repeatedly -- so every slow request after the first was served from cache,
+# nothing serialised, and the ceiling vanished. The cache must never be a hidden variable inside a
+# timing experiment.
 start_proxy() { # workers queuecap
-  "$PROXY_BIN" -p "$PROXY_PORT" -b thread_pool -w "$1" -q "$2" > "$WORK/proxy.log" 2>&1 &
+  "$PROXY_BIN" -p "$PROXY_PORT" -b thread_pool -w "$1" -q "$2" -C 0 > "$WORK/proxy.log" 2>&1 &
   PROXY_PID=$!
   disown "$PROXY_PID" 2>/dev/null
   wait_port "$PROXY_PORT" || { echo "proxy failed to start"; cat "$WORK/proxy.log"; exit 1; }

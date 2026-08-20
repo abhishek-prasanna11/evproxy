@@ -36,8 +36,10 @@ wait_port() {
   return 1
 }
 
+# -C 0 is REQUIRED here: phase 5's cache defaults to ON and these experiments reuse one url, so
+# cached responses would erase the very serialisation being measured.
 start_proxy() { # backend [workers]
-  "$PROXY_BIN" -p "$PROXY_PORT" -b "$1" ${2:+-w "$2"} > "$WORK/proxy.log" 2>&1 &
+  "$PROXY_BIN" -p "$PROXY_PORT" -b "$1" ${2:+-w "$2"} -C 0 > "$WORK/proxy.log" 2>&1 &
   PROXY_PID=$!
   disown "$PROXY_PID" 2>/dev/null
   wait_port "$PROXY_PORT" || { echo "proxy failed to start"; cat "$WORK/proxy.log"; exit 1; }

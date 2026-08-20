@@ -114,6 +114,21 @@ Same family as phase 2's false pass and phase 4's vacuous sanitizer grep: **the 
 was wrong, not the thing under test.** A test that fails for the wrong reason costs the same as one
 that passes for the wrong reason; only the direction of the lie differs.
 
+### A regression the tests caught after the fact
+
+Shipping the cache with `cache_enabled` defaulting to **on** silently broke phases 2 and 3. Both
+experiments issue the *same* URL repeatedly, so every slow request after the first was served from
+cache: the 2-worker pool stopped serialising, and both ceiling assertions failed with
+"expected the narrow pool to serialise".
+
+Nothing was wrong with the proxy. The cache had become a hidden variable inside a *timing*
+experiment — which is precisely what §1 says must never happen, applied to the wrong file. The
+benchmark had `-C 0` from the start; the phase 2 and 3 scripts did not, because they predate the
+cache.
+
+Both now pass `-C 0` with a comment saying why. Generalisable: **when a feature ships with a default,
+audit every existing experiment for whether that default changes what it measures.**
+
 ## 8. Expected failures
 
 - Caching a truncated response because the relay ended in error rather than EOF.
