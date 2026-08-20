@@ -3,3 +3,4 @@ build-asan/
 build-tsan/
 *.dSYM/
 .DS_Store
+bench/results.jsonl
