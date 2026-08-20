@@ -42,6 +42,13 @@ struct Config {
     // injection rather than dressed up as a natural measurement.
     int resolve_delay_ms = 0;
 
+    // Response cache. The three-arm I/O benchmark runs with this OFF -- the cache is a separate,
+    // controlled experiment (lock contention), never a hidden variable inside the comparison.
+    bool   cache_enabled         = true;
+    size_t cache_max_entries     = 256;
+    size_t cache_max_bytes       = 64 * 1024 * 1024;
+    size_t cache_max_entry_bytes = 1 * 1024 * 1024;
+
     int log_level = 2;
 };
 

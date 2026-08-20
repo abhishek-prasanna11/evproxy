@@ -26,7 +26,8 @@ namespace {
 // benchmark shows the event loop winning everywhere, the benchmark is wrong.
 class EventLoop final : public Backend {
 public:
-    EventLoop(const Config& cfg, Resolver& resolver) : cfg_(cfg), resolver_(resolver) {}
+    EventLoop(const Config& cfg, Resolver& resolver, ResponseCache* cache)
+        : cfg_(cfg), resolver_(resolver), cache_(cache) {}
 
     const char* name() const override { return "event_loop"; }
 
@@ -114,7 +115,7 @@ private:
             }
 
             ++accepted_;
-            auto conn = std::make_unique<Connection>(std::move(a.conn), cfg_, resolver_, next_id_++);
+            auto conn = std::make_unique<Connection>(std::move(a.conn), cfg_, resolver_, cache_, next_id_++);
             Connection* raw = conn.get();
 
             int  fd    = raw->want_fd();
@@ -205,6 +206,7 @@ private:
 
     const Config&                            cfg_;
     Resolver&                                resolver_;
+    ResponseCache*                           cache_ = nullptr;
     Fd                                       kq_;
     Fd                                       listener_;
     std::unordered_map<Connection*, Slot>    live_;
@@ -215,8 +217,8 @@ private:
 
 }  // namespace
 
-std::unique_ptr<Backend> make_event_loop(const Config& cfg, Resolver& resolver) {
-    return std::make_unique<EventLoop>(cfg, resolver);
+std::unique_ptr<Backend> make_event_loop(const Config& cfg, Resolver& resolver, ResponseCache* cache) {
+    return std::make_unique<EventLoop>(cfg, resolver, cache);
 }
 
 }  // namespace evp

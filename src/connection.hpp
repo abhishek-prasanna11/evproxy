@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "cache.hpp"
 #include "config.hpp"
 #include "http.hpp"
 #include "resolver.hpp"
@@ -27,7 +28,8 @@ enum class Want { ReadClient, WriteClient, ReadUpstream, WriteUpstream, ReadReso
 
 class Connection {
 public:
-    Connection(Fd client, const Config& cfg, Resolver& resolver, uint64_t id);
+    Connection(Fd client, const Config& cfg, Resolver& resolver, ResponseCache* cache,
+               uint64_t id);
 
     Want want() const { return want_; }
     int  want_fd() const;
@@ -62,6 +64,11 @@ private:
     // Kicks off resolution: a cache hit goes straight to connecting, otherwise the connection waits
     // on the job's pipe fd like any other readable descriptor -- which is why no backend needs to
     // know that resolution is special.
+    // True only for requests whose response may be shared between clients: GET/HEAD, and nothing
+    // carrying credentials. Serving one user's response to another is the classic proxy-cache hole.
+    bool cacheable_request() const;
+    void store_in_cache();
+
     void begin_resolve();
     void finish_resolve();
 
@@ -81,7 +88,8 @@ private:
     Fd            client_;
     Fd            upstream_;
     const Config& cfg_;
-    Resolver&     resolver_;
+    Resolver&      resolver_;
+    ResponseCache* cache_ = nullptr;
     uint64_t      id_;
 
     State    state_ = State::ReadingRequest;
@@ -102,6 +110,10 @@ private:
     size_t      out_client_off_ = 0;
 
     bool upstream_eof_ = false;
+
+    std::string cache_key_;      // empty when this exchange is not cacheable
+    std::string cache_accum_;    // response bytes accumulated for storage
+    bool        cache_too_big_ = false;
 };
 
 }  // namespace evp

@@ -6,8 +6,9 @@
 
 namespace evp {
 
-Connection::Connection(Fd client, const Config& cfg, Resolver& resolver, uint64_t id)
-    : client_(std::move(client)), cfg_(cfg), resolver_(resolver), id_(id) {
+Connection::Connection(Fd client, const Config& cfg, Resolver& resolver, ResponseCache* cache,
+                       uint64_t id)
+    : client_(std::move(client)), cfg_(cfg), resolver_(resolver), cache_(cache), id_(id) {
     set_nonblocking(client_.get());
 }
 
@@ -105,7 +106,52 @@ void Connection::do_read_client() {
     out_upstream_     = build_upstream_request(req_, body);
     out_upstream_off_ = 0;
 
+    if (cache_ && cacheable_request()) {
+        cache_key_ = cache_key(req_.method, req_.host, req_.port, req_.path);
+        std::string cached;
+        if (cache_->get(cache_key_, cached)) {
+            EVP_LOG_DEBUG("conn %llu: cache HIT %s", (unsigned long long)id_, cache_key_.c_str());
+            // Reuse the Failing path: it already means "serve these bytes, then close", which is
+            // exactly what a cache hit is. No upstream connection is ever opened.
+            fail_with(std::move(cached));
+            return;
+        }
+    }
+
     begin_resolve();
+}
+
+bool Connection::cacheable_request() const {
+    if (!cfg_.cache_enabled) return false;
+    if (req_.method != "GET" && req_.method != "HEAD") return false;
+
+    // Never store anything that identifies a user. The cheap defence against serving one client's
+    // response to another is to refuse to keep it in the first place.
+    if (!header_value(req_, "Authorization").empty()) return false;
+    if (!header_value(req_, "Cookie").empty()) return false;
+    return true;
+}
+
+void Connection::store_in_cache() {
+    if (!cache_ || cache_key_.empty() || cache_too_big_) return;
+
+    // Only a CLEAN upstream EOF means the response is complete. Storing after an error or a timeout
+    // caches a truncated body, and every later hit serves the truncation.
+    if (!upstream_eof_) return;
+
+    // Status line must be 200; anything else (404, 500, a redirect) is not shared here.
+    if (cache_accum_.compare(0, 9, "HTTP/1.1 ") != 0 && cache_accum_.compare(0, 9, "HTTP/1.0 ") != 0)
+        return;
+    if (cache_accum_.compare(9, 3, "200") != 0) return;
+
+    // A response that sets a cookie is per-user by definition.
+    if (cache_accum_.find("\r\nSet-Cookie:") != std::string::npos ||
+        cache_accum_.find("\r\nset-cookie:") != std::string::npos)
+        return;
+
+    cache_->put(cache_key_, cache_accum_);
+    EVP_LOG_DEBUG("conn %llu: cached %zu bytes for %s",
+                  (unsigned long long)id_, cache_accum_.size(), cache_key_.c_str());
 }
 
 void Connection::begin_resolve() {
@@ -262,9 +308,22 @@ void Connection::do_read_upstream() {
         // We forced `Connection: close` upstream, so EOF is how a complete response ends.
         upstream_eof_ = true;
         upstream_.reset();
+        store_in_cache();
         if (out_client_off_ >= out_client_.size()) finish();
         else set_want(Want::WriteClient);
         return;
+    }
+
+    // Accumulate into a SEPARATE buffer. Storing from out_client_ would mean a partial write to the
+    // client could corrupt what gets cached.
+    if (!cache_key_.empty() && !cache_too_big_) {
+        if (cache_accum_.size() + r.bytes > cfg_.cache_max_entry_bytes) {
+            cache_too_big_ = true;
+            cache_accum_.clear();
+            cache_accum_.shrink_to_fit();
+        } else {
+            cache_accum_.append(buf, r.bytes);
+        }
     }
 
     out_client_.append(buf, r.bytes);

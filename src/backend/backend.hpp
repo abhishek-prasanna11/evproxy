@@ -2,6 +2,7 @@
 
 #include <memory>
 
+#include "cache.hpp"
 #include "config.hpp"
 #include "resolver.hpp"
 #include "socket.hpp"
@@ -27,10 +28,10 @@ public:
 
 // One factory per architecture; make_backend dispatches on cfg.backend. Kept separate so adding a
 // backend does not touch another backend's file.
-std::unique_ptr<Backend> make_thread_per_conn(const Config& cfg, Resolver& resolver);
-std::unique_ptr<Backend> make_thread_pool(const Config& cfg, Resolver& resolver);
-std::unique_ptr<Backend> make_event_loop(const Config& cfg, Resolver& resolver);
+std::unique_ptr<Backend> make_thread_per_conn(const Config& cfg, Resolver& resolver, ResponseCache* cache);
+std::unique_ptr<Backend> make_thread_pool(const Config& cfg, Resolver& resolver, ResponseCache* cache);
+std::unique_ptr<Backend> make_event_loop(const Config& cfg, Resolver& resolver, ResponseCache* cache);
 
-std::unique_ptr<Backend> make_backend(const Config& cfg, Resolver& resolver);
+std::unique_ptr<Backend> make_backend(const Config& cfg, Resolver& resolver, ResponseCache* cache);
 
 }  // namespace evp

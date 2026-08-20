@@ -32,6 +32,7 @@ add_executable(evproxy
   src/connection.cpp
   src/conn_queue.cpp
   src/resolver.cpp
+  src/cache.cpp
   src/backend/factory.cpp
   src/backend/thread_per_conn.cpp
   src/backend/thread_pool.cpp

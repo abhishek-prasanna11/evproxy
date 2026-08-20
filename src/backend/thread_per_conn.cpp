@@ -19,7 +19,8 @@ namespace {
 // bounded pool (rung 2) fixes, and the reason the C10K problem has a name.
 class ThreadPerConn final : public Backend {
 public:
-    ThreadPerConn(const Config& cfg, Resolver& resolver) : cfg_(cfg), resolver_(resolver) {}
+    ThreadPerConn(const Config& cfg, Resolver& resolver, ResponseCache* cache)
+        : cfg_(cfg), resolver_(resolver), cache_(cache) {}
 
     const char* name() const override { return "thread_per_conn"; }
     void        stop() override { stop_.store(true, std::memory_order_relaxed); }
@@ -83,7 +84,7 @@ private:
         // `conn` is still alive would let run() return, and main destroy the Resolver, while this
         // thread is still unwinding through connection state.
         {
-            Connection conn(std::move(client), cfg_, resolver_, id);
+            Connection conn(std::move(client), cfg_, resolver_, cache_, id);
 
             while (!conn.done()) {
                 int fd = conn.want_fd();
@@ -104,6 +105,7 @@ private:
 
     const Config&         cfg_;
     Resolver&             resolver_;
+    ResponseCache*        cache_ = nullptr;
     Fd                    listener_;
     std::atomic<bool>     stop_{false};
     std::atomic<long>     live_{0};
@@ -111,8 +113,8 @@ private:
 
 }  // namespace
 
-std::unique_ptr<Backend> make_thread_per_conn(const Config& cfg, Resolver& resolver) {
-    return std::make_unique<ThreadPerConn>(cfg, resolver);
+std::unique_ptr<Backend> make_thread_per_conn(const Config& cfg, Resolver& resolver, ResponseCache* cache) {
+    return std::make_unique<ThreadPerConn>(cfg, resolver, cache);
 }
 
 }  // namespace evp

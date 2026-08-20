@@ -1,9 +1,11 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 
 #include "backend/backend.hpp"
+#include "cache.hpp"
 #include "config.hpp"
 #include "log.hpp"
 #include "resolver.hpp"
@@ -23,7 +25,8 @@ void usage() {
                  "usage: evproxy [-c config] [-p port] [-b backend] [-v level] [-w workers] [-q queuecap]\n"
                  "  backends: thread_per_conn | thread_pool | event_loop\n"
                  "  -w/-q apply to thread_pool only; -w IS the connections-in-flight ceiling\n"
-                 "  -R 0|1 blocking|async resolve   -D ms injected resolver delay\n");
+                 "  -R 0|1 blocking|async resolve   -D ms injected resolver delay\n"
+                 "  -C 0|1 response cache off|on (the I/O benchmark runs with -C 0)\n");
 }
 
 }  // namespace
@@ -49,6 +52,7 @@ int main(int argc, char** argv) {
         else if (arg == "-p") { cfg.listen_port = std::atoi(next("-p")); port_set = true; }
         else if (arg == "-v") { cfg.log_level = std::atoi(next("-v")); level_set = true; }
         else if (arg == "-w") { cfg.thread_pool_size = std::strtoul(next("-w"), nullptr, 10); workers_set = true; }
+        else if (arg == "-C") { cfg.cache_enabled = (std::atoi(next("-C")) != 0); }
         else if (arg == "-R") { cfg.async_resolve = (std::atoi(next("-R")) != 0); }
         else if (arg == "-D") { cfg.resolve_delay_ms = std::atoi(next("-D")); }
         else if (arg == "-q") { cfg.job_queue_capacity = std::strtoul(next("-q"), nullptr, 10); queue_set = true; }
@@ -113,7 +117,12 @@ int main(int argc, char** argv) {
     evp::Resolver resolver(cfg.async_resolve ? cfg.resolver_threads : 0,
                            cfg.dns_cache_ttl_s, cfg.resolve_delay_ms);
 
-    auto backend = evp::make_backend(cfg, resolver);
+    // Lock policy follows the backend: the event loop is single-threaded, so its cache needs no
+    // mutex at all. Same code, one type parameter apart -- see docs/phase5.md.
+    std::unique_ptr<evp::ResponseCache> cache;
+    if (cfg.cache_enabled) cache = evp::make_cache(cfg);
+
+    auto backend = evp::make_backend(cfg, resolver, cache.get());
     if (!backend) {
         std::fprintf(stderr, "backend '%s' is not implemented yet\n", evp::backend_name(cfg.backend));
         return 2;
@@ -131,6 +140,11 @@ int main(int argc, char** argv) {
     EVP_LOG_INFO("evproxy listening on %s:%d backend=%s resolve=%s",
                  cfg.listen_host.c_str(), cfg.listen_port, backend->name(),
                  cfg.async_resolve ? "async" : "blocking");
+    if (cache)
+        EVP_LOG_INFO("cache: on, %zu entries / %zu bytes max, lock=%s",
+                     cfg.cache_max_entries, cfg.cache_max_bytes, cache->locked() ? "mutex" : "none");
+    else
+        EVP_LOG_INFO("cache: off");
     if (cfg.resolve_delay_ms > 0)
         EVP_LOG_INFO("resolve_delay_ms=%d -- FAULT INJECTION is active, not a natural measurement",
                      cfg.resolve_delay_ms);
@@ -138,6 +152,10 @@ int main(int argc, char** argv) {
     backend->run(std::move(listener));
     resolver.shutdown();
 
+    if (cache)
+        EVP_LOG_INFO("cache: %llu hits, %llu misses, %zu entries, %zu bytes",
+                     (unsigned long long)cache->hits(), (unsigned long long)cache->misses(),
+                     cache->entries(), cache->bytes());
     EVP_LOG_INFO("resolver: %llu lookups, %llu cache hits",
                  (unsigned long long)resolver.lookups(), (unsigned long long)resolver.cache_hits());
     EVP_LOG_INFO("clean shutdown");

@@ -29,8 +29,8 @@ namespace {
 // work-queue-driven event loop in a costume, and it would erase the ceiling this arm exists to show.
 class ThreadPool final : public Backend {
 public:
-    ThreadPool(const Config& cfg, Resolver& resolver)
-        : cfg_(cfg), resolver_(resolver), queue_(cfg.job_queue_capacity) {}
+    ThreadPool(const Config& cfg, Resolver& resolver, ResponseCache* cache)
+        : cfg_(cfg), resolver_(resolver), cache_(cache), queue_(cfg.job_queue_capacity) {}
 
     const char* name() const override { return "thread_pool"; }
 
@@ -102,7 +102,7 @@ private:
     void worker_loop() {
         Fd client;
         while (queue_.pop(client)) {
-            Connection conn(std::move(client), cfg_, resolver_,
+            Connection conn(std::move(client), cfg_, resolver_, cache_,
                             next_id_.fetch_add(1, std::memory_order_relaxed));
 
             // Serve to completion, including all the waiting. This is exactly where the seat is held.
@@ -120,6 +120,7 @@ private:
 
     const Config&         cfg_;
     Resolver&             resolver_;
+    ResponseCache*        cache_ = nullptr;
     ConnQueue             queue_;
     Fd                    listener_;
     std::atomic<bool>     stop_{false};
@@ -129,8 +130,8 @@ private:
 
 }  // namespace
 
-std::unique_ptr<Backend> make_thread_pool(const Config& cfg, Resolver& resolver) {
-    return std::make_unique<ThreadPool>(cfg, resolver);
+std::unique_ptr<Backend> make_thread_pool(const Config& cfg, Resolver& resolver, ResponseCache* cache) {
+    return std::make_unique<ThreadPool>(cfg, resolver, cache);
 }
 
 }  // namespace evp

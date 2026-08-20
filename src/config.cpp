@@ -67,6 +67,10 @@ bool load_config(const std::string& path, Config& cfg, std::string& err) {
         else if (key == "resolve_delay_ms")   cfg.resolve_delay_ms = std::atoi(val.c_str());
         else if (key == "thread_pool_size")   cfg.thread_pool_size = std::strtoul(val.c_str(), nullptr, 10);
         else if (key == "job_queue_capacity") cfg.job_queue_capacity = std::strtoul(val.c_str(), nullptr, 10);
+        else if (key == "cache_enabled")         cfg.cache_enabled = (std::atoi(val.c_str()) != 0);
+        else if (key == "cache_max_entries")     cfg.cache_max_entries = std::strtoul(val.c_str(), nullptr, 10);
+        else if (key == "cache_max_bytes")       cfg.cache_max_bytes = std::strtoul(val.c_str(), nullptr, 10);
+        else if (key == "cache_max_entry_bytes") cfg.cache_max_entry_bytes = std::strtoul(val.c_str(), nullptr, 10);
         else if (key == "log_level")        cfg.log_level = std::atoi(val.c_str());
         else if (key == "backend") {
             if (!parse_backend(val, cfg.backend)) {
