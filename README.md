@@ -41,30 +41,39 @@ and it is why real proxies are event-driven.
 
 What the event loop costs: everything becomes an explicit state machine. There is no call stack to
 hold your place across a blocking call, so partial reads, partial writes and half-open connections
-all become states you manage by hand. And below the crossover it is *slower* than the pool.
+all become states you manage by hand.
+
+**And it costs throughput — measurably.** See below: this event loop is 3–4× *slower* than either
+threaded backend on requests per second, because a single-threaded loop uses one core out of ten.
+Real event-driven servers run one loop per core; this one runs one loop. The win is elsewhere.
 
 ## Results
 
 See **[RESULTS.md](RESULTS.md)** for the full tables, the methodology, and the limits of both.
 
+**Throughput — the event loop loses.** At 1000 concurrent connections: thread-per-conn 7,559 req/s,
+thread pool 6,460, **event loop 1,957**. It uses one core out of ten and makes two extra syscalls per
+state transition. This contradicted the prediction in `docs/phase6.md`, and it is reported as it
+came out.
+
+**Memory per connection**, 500 idle connections: **16.22 KB** (thread-per-conn) vs **0.64 KB**
+(event loop) — **~25×**.
+
 **The ceiling.** 64 slow clients, one per worker, then an ordinary request timed against them:
 
 | backend | ordinary request | proxy CPU |
 |---|---|---|
-| thread pool (64 workers) | **2.14 s** | **0.0 %** |
-| event loop | **0.01 s** | 3.1 % |
+| thread pool (64 workers) | **2.03 s** | **0.0 %** |
+| event loop | **0.63 s** | 2.8 % |
 
-The pool cannot serve the request while using no CPU at all — 64 workers are each blocked on a slow
-client, holding a seat. Reproduced across two independent runs.
+The pool cannot serve the request while using **no CPU at all** — 64 workers are each blocked on a
+slow client, holding a seat. Across three runs the pool measured 2.15 / 2.14 / 2.03 s at 0.0 % CPU
+every time. No throughput benchmark produces this result, because a throughput benchmark closes each
+connection before opening the next.
 
-**Memory per established connection**, 500 idle connections: **16.22 KB** (thread-per-conn) vs
-**0.58 KB** (event loop), ~28×.
-
-**What is NOT measured:** the throughput crossover. The Python origin and the asyncio load generator
-saturate at ~2.4k req/s, so all three arms flatline there and the sweep cannot distinguish them —
-the proxied arms measured *faster than the origin they proxy*, which is the signature of a shared
-bottleneck rather than a real result. Reported as inconclusive in RESULTS.md §3 rather than dressed
-up. The cache-contention measurement is likewise discarded: its sign flipped between runs.
+**So the honest conclusion is narrower than "event loops are faster":** this one trades throughput
+for connection density. It wins on memory per connection and on surviving slow clients; it loses on
+requests per second.
 
 ## How the comparison is kept honest
 

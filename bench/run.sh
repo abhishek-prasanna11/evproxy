@@ -60,13 +60,17 @@ rss_kb() { ps -o rss= -p "$PROXY_PID" 2>/dev/null | tr -d ' '; }
 # ---------------------------------------------------------------- fixtures ---
 mkdir -p "$WORK/www"
 head -c 8192 /dev/urandom | base64 | head -c 8192 > "$WORK/www/payload.txt"
-( cd "$WORK/www" && exec python3 -m http.server "$ORIGIN_PORT" --bind 127.0.0.1 ) >/dev/null 2>&1 &
+# python3 -m http.server saturated at ~2.4k req/s -- BELOW the proxy under test, so the first
+# benchmark measured the origin and all three arms flatlined at the same number. This one serves a
+# pre-baked buffer from 4 processes over SO_REUSEPORT and calibrates at ~22k req/s.
+python3 "$ROOT/bench/fast_origin.py" --port "$ORIGIN_PORT" --procs 4 --size 8192 >/dev/null 2>&1 &
 ORIGIN_PID=$!
 disown "$ORIGIN_PID" 2>/dev/null
 wait_port "$ORIGIN_PORT" || { echo "origin failed" >&2; exit 1; }
 
-URL="http://127.0.0.1:$ORIGIN_PORT/payload.txt"
-LG="python3 $ROOT/bench/loadgen.py --url $URL --proxy-port $PROXY_PORT --duration $DURATION"
+URL="http://127.0.0.1:$ORIGIN_PORT/payload"
+# Multi-process: one asyncio loop was itself the ceiling in the first benchmark.
+LG="python3 $ROOT/bench/multigen.py --url $URL --proxy-port $PROXY_PORT --duration $DURATION --procs 4"
 
 echo "== environment ==" >&2
 echo "fd limit (shell): $(ulimit -n)" >&2
@@ -76,7 +80,7 @@ sysctl -n hw.model machdep.cpu.brand_string 2>/dev/null >&2
 # Reported alongside every result. If a proxy number approaches this, the ceiling being measured is
 # the generator's, not the proxy's.
 echo "== calibrating generator against origin ==" >&2
-for c in 1 50 250; do
+for c in 1 100 1000; do
   $LG --direct --conns "$c" --label "calibration" \
     | python3 -c "import sys,json;d=json.load(sys.stdin);d['arm']='origin_direct';print(json.dumps(d))" >> "$OUT"
 done
@@ -84,19 +88,14 @@ done
 # --- 1. Concurrency sweep, all three backends, cache OFF --------------------
 echo "== concurrency sweep ==" >&2
 for backend in thread_per_conn thread_pool event_loop; do
-  for c in 1 10 50 100 250; do
+  for c in 1 20 100 500 1000; do
     for run in $(seq "$RUNS"); do
       start_proxy "$backend" 0
       tw_before="$(netstat -an -p tcp 2>/dev/null | grep -c TIME_WAIT)"
       out="$($LG --conns "$c" --label "$backend/c$c/run$run")"
       rss="$(rss_kb)"
       stop_proxy
-      # Connection-per-request burns ~9k ephemeral ports per 3s run, and macOS holds them in
-      # TIME_WAIT for ~15s against a ~16k range. A 2s settle was NOT enough: the first sweep
-      # measured a saturated client port table and reported 13 req/s at conns=1 with 2020ms
-      # stalls (SYN retransmits) while p50 stayed at 0.31ms. Re-run settled: ~3000 req/s on all
-      # three arms. Wait out TIME_WAIT, and record the depth so contamination is visible.
-      sleep 15
+      sleep 3   # TIME_WAIT measured at ~0 with this origin; see RESULTS.md
       echo "$out" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
